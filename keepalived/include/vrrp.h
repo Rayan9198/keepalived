@@ -33,6 +33,7 @@
 #include "vrrp_ipsecah.h"
 #include "vrrp_if.h"
 #include "vrrp_track.h"
+#include "vrrp_unicast.h"
 #include "timer.h"
 #include "utils.h"
 #include "vector.h"
@@ -115,6 +116,7 @@ typedef struct _vrrp_rt {
 				 * VRRP adverts
 				 */
 	list vroutes;		/* list of virtual routes */
+	list unicast;		/* list of unicast IP addresses */
 	int adver_int;		/* delay between advertisements(in sec) */
 	int nopreempt;          /* true if higher prio does not preempt lower */
 	long preempt_delay;     /* Seconds*TIMER_HZ after startup until
@@ -216,8 +218,8 @@ typedef struct _vrrp_rt {
 
 /* prototypes */
 extern vrrp_pkt *vrrp_get_header(sa_family_t, char *, int *, uint32_t *);
-extern int open_vrrp_send_socket(sa_family_t, int, int);
-extern int open_vrrp_socket(sa_family_t, int, int);
+extern int open_vrrp_send_socket(sa_family_t, int, int, int);
+extern int open_vrrp_socket(sa_family_t, int, int, int);
 extern int new_vrrp_socket(vrrp_rt *);
 extern void close_vrrp_socket(vrrp_rt *);
 extern void vrrp_send_link_update(vrrp_rt *);

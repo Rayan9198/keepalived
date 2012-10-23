@@ -408,7 +408,7 @@ vrrp_register_workers(list l)
 
 /* VRRP dispatcher functions */
 static int
-already_exist_sock(list l, sa_family_t family, int proto, int ifindex)
+already_exist_sock(list l, sa_family_t family, int proto, int ifindex, int unicast)
 {
 	sock_t *sock;
 	element e;
@@ -416,15 +416,16 @@ already_exist_sock(list l, sa_family_t family, int proto, int ifindex)
 	for (e = LIST_HEAD(l); e; ELEMENT_NEXT(e)) {
 		sock = ELEMENT_DATA(e);
 		if ((sock->family == family) &&
-		    (sock->proto == proto)	 &&
-		    (sock->ifindex == ifindex))
+		    (sock->proto == proto) &&
+		    (sock->ifindex == ifindex) &&
+		    (sock->unicast == unicast))
 			return 1;
 	}
 	return 0;
 }
 
 void
-alloc_sock(sa_family_t family, list l, int proto, int ifindex)
+alloc_sock(sa_family_t family, list l, int proto, int ifindex, int unicast)
 {
 	sock_t *new;
 
@@ -432,6 +433,7 @@ alloc_sock(sa_family_t family, list l, int proto, int ifindex)
 	new->family = family;
 	new->proto = proto;
 	new->ifindex = ifindex;
+	new->unicast = unicast;
 
 	list_add(l, new);
 }
@@ -442,20 +444,22 @@ vrrp_create_sockpool(list l)
 	vrrp_rt *vrrp;
 	list p = vrrp_data->vrrp;
 	element e;
-	int ifindex;
 	int proto;
+	int ifindex;
+	int unicast;
 
 	for (e = LIST_HEAD(p); e; ELEMENT_NEXT(e)) {
 		vrrp = ELEMENT_DATA(e);
 		ifindex = IF_INDEX(vrrp->ifp);
+		unicast = !LIST_ISEMPTY(vrrp->unicast);
 		if (vrrp->auth_type == VRRP_AUTH_AH)
 			proto = IPPROTO_IPSEC_AH;
 		else
 			proto = IPPROTO_VRRP;
 
 		/* add the vrrp element if not exist */
-		if (!already_exist_sock(l, vrrp->family, proto, ifindex))
-			alloc_sock(vrrp->family, l, proto, ifindex);
+		if (!already_exist_sock(l, vrrp->family, proto, ifindex, unicast))
+			alloc_sock(vrrp->family, l, proto, ifindex, unicast);
 	}
 }
 
@@ -467,13 +471,17 @@ vrrp_open_sockpool(list l)
 
 	for (e = LIST_HEAD(l); e; ELEMENT_NEXT(e)) {
 		sock = ELEMENT_DATA(e);
-		sock->fd_in = open_vrrp_socket(sock->family, sock->proto,
-						   sock->ifindex);
+		sock->fd_in = open_vrrp_socket(sock->family,
+					       sock->proto,
+					       sock->ifindex,
+					       sock->unicast);
 		if (sock->fd_in == -1)
 			sock->fd_out = -1;
 		else
-			sock->fd_out = open_vrrp_send_socket(sock->family, sock->proto,
-								 sock->ifindex);
+			sock->fd_out = open_vrrp_send_socket(sock->family,
+							     sock->proto,
+							     sock->ifindex,
+							     sock->unicast);
 	}
 }
 
@@ -486,17 +494,22 @@ vrrp_set_fds(list l)
 	element e_sock;
 	element e_vrrp;
 	int proto;
+	int ifindex;
+	int unicast;
 
 	for (e_sock = LIST_HEAD(l); e_sock; ELEMENT_NEXT(e_sock)) {
 		sock = ELEMENT_DATA(e_sock);
 		for (e_vrrp = LIST_HEAD(p); e_vrrp; ELEMENT_NEXT(e_vrrp)) {
 			vrrp = ELEMENT_DATA(e_vrrp);
+			ifindex = IF_INDEX(vrrp->ifp);
+			unicast = !LIST_ISEMPTY(vrrp->unicast);
 			if (vrrp->auth_type == VRRP_AUTH_AH)
 				proto = IPPROTO_IPSEC_AH;
 			else
 				proto = IPPROTO_VRRP;
 
-			if ((sock->ifindex == IF_INDEX(vrrp->ifp)) &&
+			if ((sock->ifindex == ifindex) &&
+			    (sock->unicast == unicast) &&
 			    (sock->proto == proto)) {
 				vrrp->fd_in = sock->fd_in;
 				vrrp->fd_out = sock->fd_out;

@@ -367,7 +367,7 @@ vrrp_in_chk(vrrp_rt * vrrp, char *buffer)
 
 /* build IP header */
 static void
-vrrp_build_ip(vrrp_rt * vrrp, char *buffer, int buflen)
+vrrp_build_ip(vrrp_rt * vrrp, char *buffer, int buflen, uint32_t dst)
 {
 	struct iphdr *ip = (struct iphdr *) (buffer);
 
@@ -388,7 +388,7 @@ vrrp_build_ip(vrrp_rt * vrrp, char *buffer, int buflen)
 	ip->protocol =
 	    (vrrp->auth_type == VRRP_AUTH_AH) ? IPPROTO_IPSEC_AH : IPPROTO_VRRP;
 	ip->saddr = VRRP_PKT_SADDR(vrrp);
-	ip->daddr = htonl(INADDR_VRRP_GROUP);
+	ip->daddr = dst;
 
 	/* checksum must be done last */
 	ip->check = in_csum((u_short *) ip, ip->ihl * 4, 0);
@@ -526,18 +526,23 @@ vrrp_build_vrrp(vrrp_rt * vrrp, int prio, char *buffer)
 
 /* build VRRP packet */
 static void
-vrrp_build_pkt(vrrp_rt * vrrp, int prio)
+vrrp_build_pkt(vrrp_rt * vrrp, int prio, struct sockaddr_storage * addr)
 {
 	char *bufptr;
 	int len;
+	uint32_t dst;
 
 	/* save reference values */
 	bufptr = VRRP_SEND_BUFFER(vrrp);
 	len = VRRP_SEND_BUFFER_SIZE(vrrp);
 
+	/* initialize send buffer */
+	memset(bufptr, 0, len);
+
 	if (vrrp->family == AF_INET) {
 		/* build the ip header */
-		vrrp_build_ip(vrrp, VRRP_SEND_BUFFER(vrrp), VRRP_SEND_BUFFER_SIZE(vrrp));
+		dst = (addr != NULL) ? inet_sockaddrip4(addr) : htonl(INADDR_VRRP_GROUP);
+		vrrp_build_ip(vrrp, bufptr, len, dst);
 
 		/* build the vrrp header */
 		vrrp->send_buffer += vrrp_iphdr_len(vrrp);
@@ -566,7 +571,7 @@ vrrp_build_pkt(vrrp_rt * vrrp, int prio)
 
 /* send VRRP packet */
 static int
-vrrp_send_pkt(vrrp_rt * vrrp)
+vrrp_send_pkt(vrrp_rt * vrrp, struct sockaddr_storage * addr)
 {
 	struct sockaddr_in6 dst6;
 	struct sockaddr_in dst4;
@@ -584,17 +589,23 @@ vrrp_send_pkt(vrrp_rt * vrrp)
 	if (vrrp->family == AF_INET) {
 		memset(&dst4, 0, sizeof(dst4));
 		dst4.sin_family = AF_INET;
-		dst4.sin_addr.s_addr = htonl(INADDR_VRRP_GROUP);
-
+		if (addr != NULL) {
+			dst4.sin_addr.s_addr = inet_sockaddrip4(addr);
+		} else {
+			dst4.sin_addr.s_addr = htonl(INADDR_VRRP_GROUP);
+		}
 		msg.msg_name = &dst4;
 		msg.msg_namelen = sizeof(dst4);
 	} else if (vrrp->family == AF_INET6) {
 		memset(&dst6, 0, sizeof(dst6));
 		dst6.sin6_family = AF_INET6;
 		dst6.sin6_port = htons(IPPROTO_VRRP);
-		dst6.sin6_addr.s6_addr16[0] = htons(0xff02);
-		dst6.sin6_addr.s6_addr16[7] = htons(0x12);
-
+		if (addr != NULL) {
+			inet_sockaddrip6(addr, &dst6.sin6_addr);
+		} else {
+			dst6.sin6_addr.s6_addr16[0] = htons(0xff02);
+			dst6.sin6_addr.s6_addr16[7] = htons(0x12);
+		}
 		msg.msg_name = &dst6;
 		msg.msg_namelen = sizeof(dst6);
 	}
@@ -622,17 +633,25 @@ vrrp_alloc_send_buffer(vrrp_rt * vrrp)
 int
 vrrp_send_adv(vrrp_rt * vrrp, int prio)
 {
+	struct sockaddr_storage *addr;
+	element e;
+
 	/* alloc send buffer */
 	if (!vrrp->send_buffer)
 		vrrp_alloc_send_buffer(vrrp);
-	else
-		memset(vrrp->send_buffer, 0, VRRP_SEND_BUFFER_SIZE(vrrp));
 
-	/* build the packet */
-	vrrp_build_pkt(vrrp, prio);
+	if (!LIST_ISEMPTY(vrrp->unicast)) {
+		for (e = LIST_HEAD(vrrp->unicast); e; ELEMENT_NEXT(e)) {
+			addr = ELEMENT_DATA(e);
+			vrrp_build_pkt(vrrp, prio, addr);
+			vrrp_send_pkt(vrrp, addr);
+		}
+	} else {
+		vrrp_build_pkt(vrrp, prio, NULL);
+		vrrp_send_pkt(vrrp, NULL);
+	}
 
-	/* send it */
-	return vrrp_send_pkt(vrrp);
+	return 0;
 }
 
 /* Received packet processing */
@@ -998,7 +1017,7 @@ chk_min_cfg(vrrp_rt * vrrp)
 
 /* open a VRRP sending socket */
 int
-open_vrrp_send_socket(sa_family_t family, int proto, int idx)
+open_vrrp_send_socket(sa_family_t family, int proto, int idx, int unicast)
 {
 	interface *ifp;
 	int fd = -1;
@@ -1017,15 +1036,19 @@ open_vrrp_send_socket(sa_family_t family, int proto, int idx)
 		/* Set v4 related */
 		if_setsockopt_hdrincl(&fd);
 		if_setsockopt_bindtodevice(&fd, ifp);
-		if_setsockopt_mcast_loop(family, &fd);
+		if (!unicast) {
+			if_setsockopt_mcast_loop(family, &fd);
+		}
 		if_setsockopt_priority(&fd);
 		if (fd < 0)
 			return -1;
 	} else if (family == AF_INET6) {
 		/* Set v6 related */
-		if_setsockopt_mcast_hops(family, &fd);
-		if_setsockopt_mcast_if(family, &fd, ifp);
-		if_setsockopt_mcast_loop(family, &fd);
+		if (!unicast) {
+			if_setsockopt_mcast_hops(family, &fd);
+			if_setsockopt_mcast_if(family, &fd, ifp);
+			if_setsockopt_mcast_loop(family, &fd);
+		}
 		if_setsockopt_priority(&fd);
 		if (fd < 0)
 			return -1;
@@ -1041,7 +1064,7 @@ open_vrrp_send_socket(sa_family_t family, int proto, int idx)
 
 /* open a VRRP socket and join the multicast group. */
 int
-open_vrrp_socket(sa_family_t family, int proto, int idx)
+open_vrrp_socket(sa_family_t family, int proto, int idx, int unicast)
 {
 	interface *ifp;
 	int fd = -1;
@@ -1058,7 +1081,8 @@ open_vrrp_socket(sa_family_t family, int proto, int idx)
 	}
 
 	/* Join the VRRP MCAST group */
-	if_join_vrrp_group(family, &fd, ifp, proto);
+	if (!unicast)
+		if_join_vrrp_group(family, &fd, ifp, proto);
 	if (fd < 0)
 		return -1;
 
@@ -1073,7 +1097,11 @@ open_vrrp_socket(sa_family_t family, int proto, int idx)
 void
 close_vrrp_socket(vrrp_rt * vrrp)
 {
-	if_leave_vrrp_group(vrrp->family, vrrp->fd_in, vrrp->ifp);
+	if (!LIST_ISEMPTY(vrrp->unicast)) {
+		if_leave_vrrp_group(vrrp->family, vrrp->fd_in, vrrp->ifp);
+	} else {
+		close(vrrp->fd_in);
+	}
 	close(vrrp->fd_out);
 }
 
@@ -1082,13 +1110,20 @@ new_vrrp_socket(vrrp_rt * vrrp)
 {
 	int old_fd = vrrp->fd_in;
 	int proto;
+	int ifindex;
+	int unicast;
 
 	/* close the desc & open a new one */
 	close_vrrp_socket(vrrp);
 	remove_vrrp_fd_bucket(vrrp);
+
 	proto = (vrrp->auth_type == VRRP_AUTH_AH) ? IPPROTO_IPSEC_AH : IPPROTO_VRRP;
-	vrrp->fd_in = open_vrrp_socket(vrrp->family, proto, IF_INDEX(vrrp->ifp));
-	vrrp->fd_out = open_vrrp_send_socket(vrrp->family, proto, IF_INDEX(vrrp->ifp));
+	ifindex = IF_INDEX(vrrp->ifp);
+	unicast = !LIST_ISEMPTY(vrrp->unicast);
+
+	vrrp->fd_in = open_vrrp_socket(vrrp->family, proto, ifindex, unicast);
+	vrrp->fd_out = open_vrrp_send_socket(vrrp->family, proto, ifindex, unicast);
+
 	alloc_vrrp_fd_bucket(vrrp);
 
 	/* Sync the other desc */

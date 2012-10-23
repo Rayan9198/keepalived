@@ -142,7 +142,11 @@ free_sock(void *sock_data)
 	interface *ifp;
 	if (sock->fd_in > 0) {
 		ifp = if_get_by_ifindex(sock->ifindex);
-		if_leave_vrrp_group(sock->family, sock->fd_in, ifp);
+		if (!sock->unicast) {
+			if_leave_vrrp_group(sock->family, sock->fd_in, ifp);
+		} else {
+			close(sock->fd_in);
+		}
 	}
 	if (sock->fd_out > 0)
 		close(sock->fd_out);
@@ -153,8 +157,9 @@ static void
 dump_sock(void *sock_data)
 {
 	sock_t *sock = sock_data;
-	log_message(LOG_INFO, "VRRP sockpool: [ifindex(%d), proto(%d), fd(%d,%d)]"
+	log_message(LOG_INFO, "VRRP sockpool: [ifindex(%d), unicast(%d), proto(%d), fd(%d,%d)]"
 			    , sock->ifindex
+			    , sock->unicast
 			    , sock->proto
 			    , sock->fd_in
 			    , sock->fd_out);
@@ -189,6 +194,7 @@ free_vrrp(void *data)
 	free_list(vrrp->vip);
 	free_list(vrrp->evip);
 	free_list(vrrp->vroutes);
+	free_list(vrrp->unicast);
 	FREE(vrrp);
 }
 static void
@@ -254,6 +260,10 @@ dump_vrrp(void *data)
 	if (!LIST_ISEMPTY(vrrp->vroutes)) {
 		log_message(LOG_INFO, "   Virtual Routes = %d", LIST_SIZE(vrrp->vroutes));
 		dump_list(vrrp->vroutes);
+	}
+	if (!LIST_ISEMPTY(vrrp->unicast)) {
+		log_message(LOG_INFO, "   Unicast IP = %d", LIST_SIZE(vrrp->unicast));
+		dump_list(vrrp->unicast);
 	}
 	if (vrrp->script_backup)
 		log_message(LOG_INFO, "   Backup state transition script = %s",
@@ -365,6 +375,16 @@ alloc_vrrp_vroute(vector_t *strvec)
 	if (LIST_ISEMPTY(vrrp->vroutes))
 		vrrp->vroutes = alloc_list(free_iproute, dump_iproute);
 	alloc_route(vrrp->vroutes, strvec);
+}
+
+void
+alloc_vrrp_unicast(vector_t *strvec)
+{
+	vrrp_rt *vrrp = LIST_TAIL_DATA(vrrp_data->vrrp);
+
+	if (LIST_ISEMPTY(vrrp->unicast))
+		vrrp->unicast = alloc_list(free_unicast, dump_unicast);
+	alloc_unicast(vrrp->unicast, strvec);
 }
 
 void

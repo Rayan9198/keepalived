@@ -407,6 +407,11 @@ vrrp_vroutes_handler(vector_t *strvec)
 	alloc_value_block(strvec, alloc_vrrp_vroute);
 }
 static void
+vrrp_unicast_handler(vector_t *strvec)
+{
+	alloc_value_block(strvec, alloc_vrrp_unicast);
+}
+static void
 vrrp_script_handler(vector_t *strvec)
 {
 	alloc_vrrp_script(vector_slot(strvec, 1));
@@ -490,6 +495,7 @@ vrrp_init_keywords(void)
 	install_keyword("virtual_ipaddress", &vrrp_vip_handler);
 	install_keyword("virtual_ipaddress_excluded", &vrrp_evip_handler);
 	install_keyword("virtual_routes", &vrrp_vroutes_handler);
+	install_keyword("unicast", &vrrp_unicast_handler);
 	install_keyword("preempt", &vrrp_preempt_handler);
 	install_keyword("nopreempt", &vrrp_nopreempt_handler);
 	install_keyword("preempt_delay", &vrrp_preempt_delay_handler);
